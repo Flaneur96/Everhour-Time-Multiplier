@@ -52,22 +52,22 @@ class EverhourTimeMultiplier:
         except requests.exceptions.RequestException as e:
             logging.error(f"Błąd podczas pobierania rekordów dla użytkownika {user_id}: {e}")
             return None
-    
     def update_time_record(self, time_record_id, new_time_seconds):
         """Aktualizuje rekord czasu"""
-        url = f"{BASE_URL}/time/{time_record_id}"  # POPRAWIONY ENDPOINT!
-        
+        url = f"{BASE_URL}/time/{time_record_id}"
+    
         hours = int(new_time_seconds // 3600)
         minutes = int((new_time_seconds % 3600) // 60)
         seconds = int(new_time_seconds % 60)
         time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-        
+    
         data = {
             "time": time_str
         }
-        
+    
         try:
-            response = requests.patch(url, headers=self.headers, json=data)
+        # ZMIANA: używamy PUT zamiast PATCH
+            response = requests.put(url, headers=self.headers, json=data)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
