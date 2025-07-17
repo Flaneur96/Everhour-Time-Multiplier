@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <title>Everhour Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <h1>Everhour Time Multiplier – Dashboard</h1>
+
+  <section>
+    <h2>1. Konfiguracja</h2>
+    <ul>
+      <li><strong>Mnożnik:</strong> {{ multiplier }}x</li>
+      <li><strong>Pracownicy:</strong> {{ employees|join(", ") }}</li>
+      <li><strong>Uruchamianie:</strong> codziennie o {{ run_hour }}:{{ '%02d' % run_minute }}</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>2. Ręczne uruchomienie</h2>
+    <label>Data:
+      <input id="date" type="date" value="{{ yesterday }}">
+    </label>
+    <button onclick="runNow()">Uruchom teraz</button>
+    <pre id="output"></pre>
+  </section>
+
+  <script>
+    async function runNow() {
+      const date = document.getElementById("date").value;
+      document.getElementById("output").textContent = "Przetwarzanie...";
+      const res = await fetch("/api/run-now", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({date})
+      });
+      const data = await res.json();
+      document.getElementById("output").textContent = JSON.stringify(data, null, 2);
+    }
+  </script>
+</body>
+</html>
