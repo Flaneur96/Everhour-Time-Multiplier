@@ -55,7 +55,7 @@ class EverhourTimeMultiplier:
     
     def update_time_record(self, time_record_id, new_time_seconds):
         """Aktualizuje rekord czasu"""
-        url = f"{BASE_URL}/time-records/{time_record_id}"
+        url = f"{BASE_URL}/time/{time_record_id}"  # POPRAWIONY ENDPOINT!
         
         hours = int(new_time_seconds // 3600)
         minutes = int((new_time_seconds % 3600) // 60)
