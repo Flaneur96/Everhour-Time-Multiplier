@@ -20,8 +20,11 @@ TIME_MULTIPLIER = float(os.environ.get("TIME_MULTIPLIER", "1.5"))
 RUN_HOUR = int(os.environ.get("RUN_HOUR", "1"))
 RUN_MINUTE = int(os.environ.get("RUN_MINUTE", "0"))
 
-# TRYB TESTOWY - NOWA ZMIENNA!
+# TRYB TESTOWY
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
+
+# TRYB DEBUG - dodatkowe logi
+DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
 
 # Konfiguracja logowania
 logging.basicConfig(
@@ -36,7 +39,7 @@ class EverhourTimeMultiplier:
             "X-Api-Key": api_key,
             "Content-Type": "application/json"
         }
-        self.processed_dates = set()  # Zabezpieczenie przed podwójnym przetwarzaniem
+        self.processed_dates = set()
     
     def get_user_time_records(self, user_id, date):
         """Pobiera rekordy czasu dla użytkownika z danego dnia"""
@@ -51,7 +54,12 @@ class EverhourTimeMultiplier:
         try:
             response = requests.get(url, headers=self.headers, params=params)
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            
+            if DEBUG and data:
+                logging.debug(f"Przykładowy rekord: {json.dumps(data[0], indent=2)}")
+            
+            return data
         except requests.exceptions.RequestException as e:
             logging.error(f"Błąd podczas pobierania rekordów dla użytkownika {user_id}: {e}")
             return None
@@ -65,9 +73,8 @@ class EverhourTimeMultiplier:
         seconds = int(new_time_seconds % 60)
         time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         
-        # TRYB TESTOWY - tylko pokazuje co by zrobił
         if DRY_RUN:
-            logging.info(f"🧪 [DRY RUN] Zaktualizowałbym rekord {time_record_id} na {time_str} ({new_time_seconds}s)")
+            logging.info(f"     🧪 [DRY RUN] Zaktualizowałbym rekord {time_record_id} na {time_str}")
             return {"success": True, "dry_run": True}
         
         data = {
@@ -75,12 +82,38 @@ class EverhourTimeMultiplier:
         }
         
         try:
-            response = requests.put(url, headers=self.headers, json=data)  # PUT zamiast PATCH
+            response = requests.put(url, headers=self.headers, json=data)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
             logging.error(f"Błąd podczas aktualizacji rekordu {time_record_id}: {e}")
             return None
+    
+    def get_task_name(self, task_data):
+        """Bezpiecznie pobiera nazwę zadania"""
+        if task_data is None:
+            return "Bez zadania"
+        
+        if isinstance(task_data, str):
+            # Jeśli task to string (prawdopodobnie ID)
+            return f"Zadanie ID: {task_data}"
+        
+        if isinstance(task_data, dict):
+            return task_data.get('name', f"Zadanie ID: {task_data.get('id', 'Nieznane')}")
+        
+        return "Nieznane zadanie"
+    
+    def get_project_name(self, task_data):
+        """Bezpiecznie pobiera nazwę projektu"""
+        if not isinstance(task_data, dict):
+            return "Bez projektu"
+        
+        projects = task_data.get('projects', [])
+        if projects and isinstance(projects, list) and len(projects) > 0:
+            if isinstance(projects[0], dict):
+                return projects[0].get('name', 'Bez nazwy projektu')
+        
+        return "Bez projektu"
     
     def process_user_time(self, user_id, date):
         """Przetwarza i aktualizuje czas dla użytkownika"""
@@ -97,50 +130,68 @@ class EverhourTimeMultiplier:
         
         total_original_time = 0
         total_updated_time = 0
+        successful_updates = 0
         
         logging.info(f"Znaleziono {len(time_records)} rekordów:")
         
-        for record in time_records:
-            record_id = record.get('id')
-            original_time_seconds = record.get('time', 0)
-            task_name = record.get('task', {}).get('name', 'Bez nazwy')
-            project_name = record.get('task', {}).get('projects', [{}])[0].get('name', 'Bez projektu')
-            
-            # Oblicz nowy czas z mnożnikiem
-            new_time_seconds = int(original_time_seconds * TIME_MULTIPLIER)
-            
-            original_hours = original_time_seconds / 3600
-            new_hours = new_time_seconds / 3600
-            
-            logging.info(f"  📋 [{project_name}] {task_name}: {original_hours:.2f}h → {new_hours:.2f}h")
-            
-            # Sprawdź czy nie jest to już przetworzone
-            if record.get('comment', '').endswith('[AUTO-MULTIPLIED]'):
-                logging.info(f"     ⏭️  Rekord już był przetworzony, pomijam")
-                continue
-            
-            result = self.update_time_record(record_id, new_time_seconds)
-            
-            if result:
-                total_original_time += original_time_seconds
-                total_updated_time += new_time_seconds
-                if not DRY_RUN:
-                    logging.info(f"     ✅ Zaktualizowano rekord {record_id}")
-            else:
-                logging.error(f"     ❌ Nie udało się zaktualizować rekordu {record_id}")
+        for i, record in enumerate(time_records):
+            try:
+                record_id = record.get('id')
+                original_time_seconds = record.get('time', 0)
+                
+                # Debugowanie struktury pierwszego rekordu
+                if DEBUG and i == 0:
+                    logging.debug(f"Struktura rekordu: {json.dumps(record, indent=2)}")
+                
+                # Pobierz informacje o zadaniu
+                task_data = record.get('task')
+                task_name = self.get_task_name(task_data)
+                project_name = self.get_project_name(task_data)
+                
+                # Oblicz nowy czas z mnożnikiem
+                new_time_seconds = int(original_time_seconds * TIME_MULTIPLIER)
+                
+                original_hours = original_time_seconds / 3600
+                new_hours = new_time_seconds / 3600
+                
+                logging.info(f"  📋 [{project_name}] {task_name}:")
+                logging.info(f"     ⏱️  {original_hours:.2f}h → {new_hours:.2f}h (+{new_hours - original_hours:.2f}h)")
+                
+                # Sprawdź czy nie jest to już przetworzone
+                comment = record.get('comment', '')
+                if comment and '[AUTO-MULTIPLIED]' in comment:
+                    logging.info(f"     ⏭️  Rekord już był przetworzony, pomijam")
+                    continue
+                
+                result = self.update_time_record(record_id, new_time_seconds)
+                
+                if result:
+                    total_original_time += original_time_seconds
+                    total_updated_time += new_time_seconds
+                    successful_updates += 1
+                    if not DRY_RUN:
+                        logging.info(f"     ✅ Zaktualizowano")
+                else:
+                    if not DRY_RUN:
+                        logging.error(f"     ❌ Błąd aktualizacji")
+                        
+            except Exception as e:
+                logging.error(f"Błąd podczas przetwarzania rekordu {i}: {e}")
+                if DEBUG:
+                    logging.debug(f"Problematyczny rekord: {record}")
         
+        # Podsumowanie
         if total_original_time > 0:
             original_hours = total_original_time / 3600
             updated_hours = total_updated_time / 3600
-            if DRY_RUN:
-                logging.info(f"🧪 [DRY RUN] Podsumowanie: {original_hours:.2f}h → {updated_hours:.2f}h (różnica: +{updated_hours - original_hours:.2f}h)")
-            else:
-                logging.info(f"✅ Podsumowanie: {original_hours:.2f}h → {updated_hours:.2f}h (różnica: +{updated_hours - original_hours:.2f}h)")
-    
-    def add_comment_to_record(self, record_id, comment):
-        """Dodaje komentarz do rekordu czasu"""
-        # Implementacja zależna od API Everhour
-        pass
+            diff_hours = updated_hours - original_hours
+            
+            logging.info("")
+            logging.info("📊 PODSUMOWANIE:")
+            logging.info(f"   Przetworzonych rekordów: {successful_updates}/{len(time_records)}")
+            logging.info(f"   Czas oryginalny: {original_hours:.2f}h")
+            logging.info(f"   Czas po aktualizacji: {updated_hours:.2f}h")
+            logging.info(f"   Różnica: +{diff_hours:.2f}h")
     
     def run_daily_update(self, process_date=None):
         """Uruchamia aktualizację dla wszystkich użytkowników"""
@@ -164,7 +215,7 @@ class EverhourTimeMultiplier:
         error_count = 0
         
         for user_id in EMPLOYEES_WITH_MULTIPLIER:
-            if not user_id.strip():  # Pomijaj puste ID
+            if not user_id.strip():
                 continue
                 
             try:
@@ -208,6 +259,9 @@ def main():
     
     if DRY_RUN:
         logging.info("🧪 TRYB DRY RUN WŁĄCZONY - dane nie będą modyfikowane")
+    
+    if DEBUG:
+        logging.info("🔍 TRYB DEBUG WŁĄCZONY - dodatkowe logi")
     
     # Uruchom raz na starcie (dla testów)
     if os.environ.get("RUN_ON_START", "false").lower() == "true":
