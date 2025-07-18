@@ -178,13 +178,10 @@ class EverhourTimeMultiplier:
                 project_name = self.get_project_name(task_data)
                 
                 # WAŻNE: Pomijaj rekordy bez zadania
-                #if not task_data:
-                    #logging.warning(f"  ⚠️  Pomijam rekord {record_id} - brak przypisanego zadania")
-                    #skipped_no_task += 1
-                    #continue
-
-                if i >= 1:  # Przetworzy tylko pierwszy rekord
-                    break
+                if not task_data:
+                    logging.warning(f"  ⚠️  Pomijam rekord {record_id} - brak przypisanego zadania")
+                    skipped_no_task += 1
+                    continue
                 
                 # Oblicz nowy czas z mnożnikiem
                 new_time_seconds = int(original_time_seconds * TIME_MULTIPLIER)
@@ -216,6 +213,9 @@ class EverhourTimeMultiplier:
                 logging.error(f"Błąd podczas przetwarzania rekordu {i}: {e}")
                 if DEBUG:
                     logging.debug(f"Problematyczny rekord: {record}")
+
+            if i >= 0:  # Przetworzy tylko pierwszy rekord
+                break
         
         # Podsumowanie
         logging.info("")
