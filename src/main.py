@@ -26,9 +26,12 @@ DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
 # TRYB DEBUG - dodatkowe logi
 DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
 
+# SUPER DEBUG - jeszcze więcej logów
+SUPER_DEBUG = os.environ.get("SUPER_DEBUG", "false").lower() == "true"
+
 # Konfiguracja logowania
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG if SUPER_DEBUG else logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
@@ -56,8 +59,28 @@ class EverhourTimeMultiplier:
             response.raise_for_status()
             data = response.json()
             
-            if DEBUG and data:
-                logging.debug(f"Przykładowy rekord: {json.dumps(data[0], indent=2)}")
+            if (DEBUG or SUPER_DEBUG) and data:
+                logging.debug("=" * 60)
+                logging.debug("STRUKTURA PIERWSZEGO REKORDU:")
+                logging.debug("=" * 60)
+                logging.debug(json.dumps(data[0], indent=2))
+                logging.debug("=" * 60)
+                
+                # Sprawdź strukturę task
+                if 'task' in data[0]:
+                    task = data[0]['task']
+                    logging.debug(f"Typ task: {type(task)}")
+                    if isinstance(task, dict):
+                        logging.debug(f"Task keys: {list(task.keys())}")
+                        logging.debug(f"Task platform: {task.get('platform', 'BRAK')}")
+                        logging.debug(f"Task foreign: {task.get('foreign', 'BRAK')}")
+                
+                # Sprawdź strukturę user
+                if 'user' in data[0]:
+                    user = data[0]['user']
+                    logging.debug(f"Typ user: {type(user)}")
+                    if isinstance(user, dict):
+                        logging.debug(f"User ID: {user.get('id')}")
             
             return data
         except requests.exceptions.RequestException as e:
@@ -65,8 +88,7 @@ class EverhourTimeMultiplier:
             return None
     
     def update_time_record(self, record_id, new_time_seconds, original_record):
-        """Aktualizuje rekord czasu ZACHOWUJĄC WSZYSTKIE dane"""
-        url = f"{BASE_URL}/time/{record_id}"
+        """Aktualizuje rekord czasu ZACHOWUJĄC WSZYSTKIE dane - wersja dla ASANY"""
         
         hours = int(new_time_seconds // 3600)
         minutes = int((new_time_seconds % 3600) // 60)
@@ -75,47 +97,113 @@ class EverhourTimeMultiplier:
         
         if DRY_RUN:
             logging.info(f"     🧪 [DRY RUN] Zaktualizowałbym rekord {record_id} na {time_str}")
+            if SUPER_DEBUG:
+                logging.debug(f"     🧪 [DRY RUN] Oryginalny rekord: {json.dumps(original_record, indent=2)}")
             return {"success": True, "dry_run": True}
         
-        # WAŻNE: Buduj payload z WSZYSTKIMI oryginalnymi danymi
+        # Przygotuj wszystkie możliwe dane z oryginalnego rekordu
+        task_data = original_record.get('task')
+        user_data = original_record.get('user')
+        
+        # Sprawdź czy to zadanie z Asany
+        is_asana = False
+        if isinstance(task_data, dict):
+            platform = task_data.get('platform')
+            is_asana = platform == 'as' or task_data.get('foreign', False)
+            if SUPER_DEBUG:
+                logging.debug(f"Task platform: {platform}, is_asana: {is_asana}")
+        
+        # OPCJA 1: Spróbuj przez endpoint zadania (dla Asany)
+        if is_asana and task_data and isinstance(task_data, dict) and task_data.get('id'):
+            task_id = task_data.get('id')
+            url = f"{BASE_URL}/tasks/{task_id}/time"
+            
+            # Format dla endpointu zadania
+            data = {
+                "time": new_time_seconds,  # W sekundach!
+                "date": original_record.get('date'),
+                "user": user_data.get('id') if isinstance(user_data, dict) else user_data
+            }
+            
+            if original_record.get('comment'):
+                data["comment"] = original_record.get('comment')
+            
+            if DEBUG or SUPER_DEBUG:
+                logging.debug(f"Próbuję endpoint zadania: PUT {url}")
+                logging.debug(f"Payload dla zadania: {json.dumps(data)}")
+            
+            try:
+                response = requests.put(url, headers=self.headers, json=data)
+                if response.status_code == 200:
+                    logging.info(f"     ✅ Zaktualizowano przez endpoint zadania (Asana)")
+                    return response.json()
+                else:
+                    logging.warning(f"Endpoint zadania zwrócił {response.status_code}: {response.text}")
+            except Exception as e:
+                logging.warning(f"Błąd endpointu zadania: {e}")
+        
+        # OPCJA 2: Standardowy endpoint z PEŁNYMI danymi
+        url = f"{BASE_URL}/time/{record_id}"
+        
+        # Buduj kompletny payload
         data = {
             "time": time_str,
-            "date": original_record.get('date')  # Zachowaj datę
+            "date": original_record.get('date')
         }
         
-        # Zachowaj użytkownika
-        user_data = original_record.get('user')
+        # Dodaj użytkownika (KRYTYCZNE!)
         if user_data:
             if isinstance(user_data, dict):
                 data["user"] = user_data.get('id')
             else:
                 data["user"] = user_data
         
-        # KLUCZOWE: Zachowaj zadanie używając poprawnego pola "task"
-        task_data = original_record.get('task')
+        # Dodaj zadanie (KRYTYCZNE!)
         if task_data:
             if isinstance(task_data, dict):
                 data["task"] = task_data.get('id')
             elif isinstance(task_data, str):
                 data["task"] = task_data
         
-        # Zachowaj komentarz jeśli istnieje
+        # Dodaj projekt jeśli jest
+        project_data = original_record.get('project')
+        if project_data:
+            if isinstance(project_data, dict):
+                data["project"] = project_data.get('id')
+            elif isinstance(project_data, str):
+                data["project"] = project_data
+        
+        # Zachowaj komentarz
         if original_record.get('comment'):
             data["comment"] = original_record.get('comment')
         
-        if DEBUG:
-            logging.debug(f"Payload do wysłania: {json.dumps(data)}")
+        # Zachowaj inne możliwe pola
+        for field in ['billable', 'locked', 'invoiced']:
+            if field in original_record:
+                data[field] = original_record[field]
+        
+        if DEBUG or SUPER_DEBUG:
+            logging.debug(f"Używam standardowego endpointu: PUT {url}")
+            logging.debug(f"Kompletny payload: {json.dumps(data, indent=2)}")
         
         try:
             response = requests.put(url, headers=self.headers, json=data)
             response.raise_for_status()
+            
+            if SUPER_DEBUG:
+                logging.debug(f"Odpowiedź API: {response.status_code}")
+                logging.debug(f"Odpowiedź body: {response.text}")
+            
             logging.info(f"     ✅ Zaktualizowano czas na {time_str}")
             return response.json()
         except requests.exceptions.RequestException as e:
-            logging.error(f"Błąd podczas aktualizacji rekordu {record_id}: {e}")
-            if DEBUG and hasattr(e, 'response'):
-                logging.debug(f"Status: {e.response.status_code}")
-                logging.debug(f"Odpowiedź: {e.response.text}")
+            logging.error(f"❌ Błąd podczas aktualizacji rekordu {record_id}: {e}")
+            if hasattr(e, 'response'):
+                logging.error(f"Status: {e.response.status_code}")
+                logging.error(f"Odpowiedź: {e.response.text}")
+                if SUPER_DEBUG:
+                    logging.debug(f"Request headers: {self.headers}")
+                    logging.debug(f"Request payload: {json.dumps(data, indent=2)}")
             return None
     
     def get_task_name(self, task_data):
@@ -136,6 +224,11 @@ class EverhourTimeMultiplier:
         if not isinstance(task_data, dict):
             return "Bez projektu"
         
+        # Dla Asany projekt może być w task
+        if 'project' in task_data and isinstance(task_data['project'], dict):
+            return task_data['project'].get('name', 'Bez nazwy projektu')
+        
+        # Standardowo w projects
         projects = task_data.get('projects', [])
         if projects and isinstance(projects, list) and len(projects) > 0:
             if isinstance(projects[0], dict):
@@ -168,9 +261,11 @@ class EverhourTimeMultiplier:
                 record_id = record.get('id')
                 original_time_seconds = record.get('time', 0)
                 
-                # Debugowanie struktury pierwszego rekordu
-                if DEBUG and i == 0:
-                    logging.debug(f"Struktura rekordu: {json.dumps(record, indent=2)}")
+                # Super debug dla każdego rekordu
+                if SUPER_DEBUG:
+                    logging.debug(f"\n--- REKORD {i+1} ---")
+                    logging.debug(f"ID: {record_id}")
+                    logging.debug(f"Struktura: {json.dumps(record, indent=2)}")
                 
                 # Pobierz informacje o zadaniu
                 task_data = record.get('task')
@@ -211,11 +306,9 @@ class EverhourTimeMultiplier:
                         
             except Exception as e:
                 logging.error(f"Błąd podczas przetwarzania rekordu {i}: {e}")
-                if DEBUG:
-                    logging.debug(f"Problematyczny rekord: {record}")
-
-            if i >= 0:  # Przetworzy tylko pierwszy rekord
-                break
+                if SUPER_DEBUG:
+                    import traceback
+                    logging.debug(f"Traceback: {traceback.format_exc()}")
         
         # Podsumowanie
         logging.info("")
@@ -302,6 +395,9 @@ def main():
     
     if DEBUG:
         logging.info("🔍 TRYB DEBUG WŁĄCZONY - dodatkowe logi")
+    
+    if SUPER_DEBUG:
+        logging.info("🔬 TRYB SUPER DEBUG WŁĄCZONY - maksymalne logowanie")
     
     # Uruchom raz na starcie (dla testów)
     if os.environ.get("RUN_ON_START", "false").lower() == "true":
