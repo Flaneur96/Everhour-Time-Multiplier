@@ -182,6 +182,9 @@ class EverhourTimeMultiplier:
                     logging.warning(f"  ⚠️  Pomijam rekord {record_id} - brak przypisanego zadania")
                     skipped_no_task += 1
                     continue
+
+                if i >= 0:  # Przetworzy tylko pierwszy rekord
+                    break
                 
                 # Oblicz nowy czas z mnożnikiem
                 new_time_seconds = int(original_time_seconds * TIME_MULTIPLIER)
