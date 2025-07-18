@@ -282,10 +282,6 @@ class EverhourTimeMultiplier:
                 if SUPER_DEBUG:
                     import traceback
                     logging.debug(f"Traceback: {traceback.format_exc()}")
-
-            # W process_user_time dodaj po pętli for:
-            if i >= 0:  # Przetworzy tylko pierwszy rekord
-                break
         
         # Podsumowanie
         logging.info("")
