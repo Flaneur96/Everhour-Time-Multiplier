@@ -178,10 +178,10 @@ class EverhourTimeMultiplier:
                 project_name = self.get_project_name(task_data)
                 
                 # WAŻNE: Pomijaj rekordy bez zadania
-                if not task_data:
-                    logging.warning(f"  ⚠️  Pomijam rekord {record_id} - brak przypisanego zadania")
-                    skipped_no_task += 1
-                    continue
+                #if not task_data:
+                    #logging.warning(f"  ⚠️  Pomijam rekord {record_id} - brak przypisanego zadania")
+                    #skipped_no_task += 1
+                    #continue
 
                 if i >= 1:  # Przetworzy tylko pierwszy rekord
                     break
