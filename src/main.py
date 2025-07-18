@@ -64,8 +64,8 @@ class EverhourTimeMultiplier:
             logging.error(f"Błąd podczas pobierania rekordów dla użytkownika {user_id}: {e}")
             return None
     
-    def update_time_record(self, time_record_id, new_time_seconds, task_id=None):
-        """Aktualizuje rekord czasu zachowując przypisanie do zadania"""
+    def update_time_record(self, time_record_id, new_time_seconds):
+        """Aktualizuje TYLKO czas w rekordzie - używa PATCH żeby nie nadpisać innych pól"""
         url = f"{BASE_URL}/time/{time_record_id}"
         
         hours = int(new_time_seconds // 3600)
@@ -75,29 +75,24 @@ class EverhourTimeMultiplier:
         
         if DRY_RUN:
             logging.info(f"     🧪 [DRY RUN] Zaktualizowałbym rekord {time_record_id} na {time_str}")
-            if task_id:
-                logging.info(f"     🧪 [DRY RUN] Z zachowaniem task_id: {task_id}")
             return {"success": True, "dry_run": True}
         
-        # WAŻNE: Buduj payload z task_id jeśli istnieje
+        # Tylko pole time - PATCH nie ruszy innych pól!
         data = {
             "time": time_str
         }
         
-        # Jeśli mamy task_id, dodaj go do danych
-        if task_id:
-            data["task"] = task_id
-            if DEBUG:
-                logging.debug(f"Dodaję task_id do payload: {task_id}")
-        
         try:
-            response = requests.put(url, headers=self.headers, json=data)
+            # UŻYWAMY PATCH ZAMIAST PUT!
+            response = requests.patch(url, headers=self.headers, json=data)
             response.raise_for_status()
+            logging.info(f"     ✅ Zaktualizowano czas na {time_str}")
             return response.json()
         except requests.exceptions.RequestException as e:
             logging.error(f"Błąd podczas aktualizacji rekordu {time_record_id}: {e}")
             if DEBUG:
-                logging.debug(f"Payload był: {json.dumps(data)}")
+                logging.debug(f"Status: {e.response.status_code if hasattr(e, 'response') else 'N/A'}")
+                logging.debug(f"Odpowiedź: {e.response.text if hasattr(e, 'response') else 'N/A'}")
             return None
     
     def get_task_name(self, task_data):
@@ -106,7 +101,6 @@ class EverhourTimeMultiplier:
             return "Bez zadania"
         
         if isinstance(task_data, str):
-            # Jeśli task to string (prawdopodobnie ID)
             return f"Zadanie ID: {task_data}"
         
         if isinstance(task_data, dict):
@@ -125,20 +119,6 @@ class EverhourTimeMultiplier:
                 return projects[0].get('name', 'Bez nazwy projektu')
         
         return "Bez projektu"
-    
-    def get_task_id(self, task_data):
-        """Bezpiecznie pobiera ID zadania"""
-        if task_data is None:
-            return None
-        
-        if isinstance(task_data, str):
-            # Jeśli task to string, to prawdopodobnie jest to ID
-            return task_data
-        
-        if isinstance(task_data, dict):
-            return task_data.get('id')
-        
-        return None
     
     def process_user_time(self, user_id, date):
         """Przetwarza i aktualizuje czas dla użytkownika"""
@@ -168,11 +148,10 @@ class EverhourTimeMultiplier:
                 if DEBUG and i == 0:
                     logging.debug(f"Struktura rekordu: {json.dumps(record, indent=2)}")
                 
-                # Pobierz informacje o zadaniu
+                # Pobierz informacje o zadaniu (tylko do wyświetlenia)
                 task_data = record.get('task')
                 task_name = self.get_task_name(task_data)
                 project_name = self.get_project_name(task_data)
-                task_id = self.get_task_id(task_data)  # WAŻNE: Pobieramy task_id
                 
                 # Oblicz nowy czas z mnożnikiem
                 new_time_seconds = int(original_time_seconds * TIME_MULTIPLIER)
@@ -189,15 +168,13 @@ class EverhourTimeMultiplier:
                     logging.info(f"     ⏭️  Rekord już był przetworzony, pomijam")
                     continue
                 
-                # WAŻNE: Przekaż task_id do funkcji update
-                result = self.update_time_record(record_id, new_time_seconds, task_id)
+                # Aktualizuj TYLKO czas - PATCH nie ruszy zadania ani użytkownika!
+                result = self.update_time_record(record_id, new_time_seconds)
                 
                 if result:
                     total_original_time += original_time_seconds
                     total_updated_time += new_time_seconds
                     successful_updates += 1
-                    if not DRY_RUN:
-                        logging.info(f"     ✅ Zaktualizowano")
                 else:
                     if not DRY_RUN:
                         logging.error(f"     ❌ Błąd aktualizacji")
