@@ -64,9 +64,9 @@ class EverhourTimeMultiplier:
             logging.error(f"Błąd podczas pobierania rekordów dla użytkownika {user_id}: {e}")
             return None
     
-    def update_time_record(self, time_record_id, new_time_seconds):
-        """Aktualizuje TYLKO czas w rekordzie - używa PATCH żeby nie nadpisać innych pól"""
-        url = f"{BASE_URL}/time/{time_record_id}"
+    def update_time_record(self, record_id, new_time_seconds, original_record):
+        """Aktualizuje rekord czasu ZACHOWUJĄC WSZYSTKIE dane"""
+        url = f"{BASE_URL}/time/{record_id}"
         
         hours = int(new_time_seconds // 3600)
         minutes = int((new_time_seconds % 3600) // 60)
@@ -74,25 +74,48 @@ class EverhourTimeMultiplier:
         time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         
         if DRY_RUN:
-            logging.info(f"     🧪 [DRY RUN] Zaktualizowałbym rekord {time_record_id} na {time_str}")
+            logging.info(f"     🧪 [DRY RUN] Zaktualizowałbym rekord {record_id} na {time_str}")
             return {"success": True, "dry_run": True}
         
-        # Tylko pole time - PATCH nie ruszy innych pól!
+        # WAŻNE: Buduj payload z WSZYSTKIMI oryginalnymi danymi
         data = {
-            "time": time_str
+            "time": time_str,
+            "date": original_record.get('date')  # Zachowaj datę
         }
         
+        # Zachowaj użytkownika
+        user_data = original_record.get('user')
+        if user_data:
+            if isinstance(user_data, dict):
+                data["user"] = user_data.get('id')
+            else:
+                data["user"] = user_data
+        
+        # KLUCZOWE: Zachowaj zadanie używając poprawnego pola "task"
+        task_data = original_record.get('task')
+        if task_data:
+            if isinstance(task_data, dict):
+                data["task"] = task_data.get('id')
+            elif isinstance(task_data, str):
+                data["task"] = task_data
+        
+        # Zachowaj komentarz jeśli istnieje
+        if original_record.get('comment'):
+            data["comment"] = original_record.get('comment')
+        
+        if DEBUG:
+            logging.debug(f"Payload do wysłania: {json.dumps(data)}")
+        
         try:
-            # UŻYWAMY PATCH ZAMIAST PUT!
-            response = requests.patch(url, headers=self.headers, json=data)
+            response = requests.put(url, headers=self.headers, json=data)
             response.raise_for_status()
             logging.info(f"     ✅ Zaktualizowano czas na {time_str}")
             return response.json()
         except requests.exceptions.RequestException as e:
-            logging.error(f"Błąd podczas aktualizacji rekordu {time_record_id}: {e}")
-            if DEBUG:
-                logging.debug(f"Status: {e.response.status_code if hasattr(e, 'response') else 'N/A'}")
-                logging.debug(f"Odpowiedź: {e.response.text if hasattr(e, 'response') else 'N/A'}")
+            logging.error(f"Błąd podczas aktualizacji rekordu {record_id}: {e}")
+            if DEBUG and hasattr(e, 'response'):
+                logging.debug(f"Status: {e.response.status_code}")
+                logging.debug(f"Odpowiedź: {e.response.text}")
             return None
     
     def get_task_name(self, task_data):
@@ -136,6 +159,7 @@ class EverhourTimeMultiplier:
         total_original_time = 0
         total_updated_time = 0
         successful_updates = 0
+        skipped_no_task = 0
         
         logging.info(f"Znaleziono {len(time_records)} rekordów:")
         
@@ -148,10 +172,16 @@ class EverhourTimeMultiplier:
                 if DEBUG and i == 0:
                     logging.debug(f"Struktura rekordu: {json.dumps(record, indent=2)}")
                 
-                # Pobierz informacje o zadaniu (tylko do wyświetlenia)
+                # Pobierz informacje o zadaniu
                 task_data = record.get('task')
                 task_name = self.get_task_name(task_data)
                 project_name = self.get_project_name(task_data)
+                
+                # WAŻNE: Pomijaj rekordy bez zadania
+                if not task_data:
+                    logging.warning(f"  ⚠️  Pomijam rekord {record_id} - brak przypisanego zadania")
+                    skipped_no_task += 1
+                    continue
                 
                 # Oblicz nowy czas z mnożnikiem
                 new_time_seconds = int(original_time_seconds * TIME_MULTIPLIER)
@@ -168,8 +198,8 @@ class EverhourTimeMultiplier:
                     logging.info(f"     ⏭️  Rekord już był przetworzony, pomijam")
                     continue
                 
-                # Aktualizuj TYLKO czas - PATCH nie ruszy zadania ani użytkownika!
-                result = self.update_time_record(record_id, new_time_seconds)
+                # Aktualizuj z PEŁNYM rekordem
+                result = self.update_time_record(record_id, new_time_seconds, record)
                 
                 if result:
                     total_original_time += original_time_seconds
@@ -185,14 +215,17 @@ class EverhourTimeMultiplier:
                     logging.debug(f"Problematyczny rekord: {record}")
         
         # Podsumowanie
+        logging.info("")
+        logging.info("📊 PODSUMOWANIE:")
+        logging.info(f"   Znalezionych rekordów: {len(time_records)}")
+        logging.info(f"   Przetworzonych rekordów: {successful_updates}")
+        logging.info(f"   Pominiętych (brak zadania): {skipped_no_task}")
+        
         if total_original_time > 0:
             original_hours = total_original_time / 3600
             updated_hours = total_updated_time / 3600
             diff_hours = updated_hours - original_hours
             
-            logging.info("")
-            logging.info("📊 PODSUMOWANIE:")
-            logging.info(f"   Przetworzonych rekordów: {successful_updates}/{len(time_records)}")
             logging.info(f"   Czas oryginalny: {original_hours:.2f}h")
             logging.info(f"   Czas po aktualizacji: {updated_hours:.2f}h")
             logging.info(f"   Różnica: +{diff_hours:.2f}h")
