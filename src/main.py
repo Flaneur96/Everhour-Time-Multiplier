@@ -249,9 +249,6 @@ class EverhourTimeMultiplier:
                 if SUPER_DEBUG:
                     import traceback
                     logging.debug(f"Traceback: {traceback.format_exc()}")
-
-            if i >= 0:  # Przetworzy tylko pierwszy rekord
-                break
                 
         logging.info("")
         logging.info("📊 PODSUMOWANIE:")
