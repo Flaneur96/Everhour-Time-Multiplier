@@ -86,7 +86,7 @@ class EverhourTimeMultiplier:
         
         # Jeśli mamy task_id, dodaj go do danych
         if task_id:
-            data["task"] = task_id
+            data["taskId"] = task_id
             if DEBUG:
                 logging.debug(f"Dodaję task_id do payload: {task_id}")
         
