@@ -183,7 +183,7 @@ class EverhourTimeMultiplier:
                     skipped_no_task += 1
                     continue
 
-                if i >= 0:  # Przetworzy tylko pierwszy rekord
+                if i >= 1:  # Przetworzy tylko pierwszy rekord
                     break
                 
                 # Oblicz nowy czas z mnożnikiem
