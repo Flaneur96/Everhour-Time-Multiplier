@@ -79,8 +79,7 @@ class EverhourTimeMultiplier:
                 if 'user' in data[0]:
                     user = data[0]['user']
                     logging.debug(f"Typ user: {type(user)}")
-                    if isinstance(user, dict):
-                        logging.debug(f"User ID: {user.get('id')}")
+                    logging.debug(f"User value: {user}")
             
             return data
         except requests.exceptions.RequestException as e:
@@ -88,7 +87,7 @@ class EverhourTimeMultiplier:
             return None
     
     def update_time_record(self, record_id, new_time_seconds, original_record):
-        """Aktualizuje rekord czasu ZACHOWUJĄC WSZYSTKIE dane - wersja dla ASANY"""
+        """Aktualizuje rekord czasu ZACHOWUJĄC WSZYSTKIE dane"""
         
         hours = int(new_time_seconds // 3600)
         minutes = int((new_time_seconds % 3600) // 60)
@@ -101,48 +100,20 @@ class EverhourTimeMultiplier:
                 logging.debug(f"     🧪 [DRY RUN] Oryginalny rekord: {json.dumps(original_record, indent=2)}")
             return {"success": True, "dry_run": True}
         
-        # Przygotuj wszystkie możliwe dane z oryginalnego rekordu
+        # Pobierz dane z oryginalnego rekordu
         task_data = original_record.get('task')
         user_data = original_record.get('user')
         
         # Sprawdź czy to zadanie z Asany
         is_asana = False
         if isinstance(task_data, dict):
-            platform = task_data.get('platform')
-            is_asana = platform == 'as' or task_data.get('foreign', False)
+            # Zadania z Asany mają ID zaczynające się od "as:"
+            task_id = task_data.get('id', '')
+            is_asana = task_id.startswith('as:')
             if SUPER_DEBUG:
-                logging.debug(f"Task platform: {platform}, is_asana: {is_asana}")
+                logging.debug(f"Task ID: {task_id}, is_asana: {is_asana}")
         
-        # OPCJA 1: Spróbuj przez endpoint zadania (dla Asany)
-        if is_asana and task_data and isinstance(task_data, dict) and task_data.get('id'):
-            task_id = task_data.get('id')
-            url = f"{BASE_URL}/tasks/{task_id}/time"
-            
-            # Format dla endpointu zadania
-            data = {
-                "time": new_time_seconds,  # W sekundach!
-                "date": original_record.get('date'),
-                "user": user_data.get('id') if isinstance(user_data, dict) else user_data
-            }
-            
-            if original_record.get('comment'):
-                data["comment"] = original_record.get('comment')
-            
-            if DEBUG or SUPER_DEBUG:
-                logging.debug(f"Próbuję endpoint zadania: PUT {url}")
-                logging.debug(f"Payload dla zadania: {json.dumps(data)}")
-            
-            try:
-                response = requests.put(url, headers=self.headers, json=data)
-                if response.status_code == 200:
-                    logging.info(f"     ✅ Zaktualizowano przez endpoint zadania (Asana)")
-                    return response.json()
-                else:
-                    logging.warning(f"Endpoint zadania zwrócił {response.status_code}: {response.text}")
-            except Exception as e:
-                logging.warning(f"Błąd endpointu zadania: {e}")
-        
-        # OPCJA 2: Standardowy endpoint z PEŁNYMI danymi
+        # Standardowy endpoint
         url = f"{BASE_URL}/time/{record_id}"
         
         # Buduj kompletny payload
@@ -151,39 +122,33 @@ class EverhourTimeMultiplier:
             "date": original_record.get('date')
         }
         
-        # Dodaj użytkownika (KRYTYCZNE!)
-        if user_data:
-            if isinstance(user_data, dict):
+        # POPRAWKA: Obsługa user jako INT lub DICT
+        if user_data is not None:
+            if isinstance(user_data, (int, str)):
+                data["user"] = user_data  # To już jest ID
+            elif isinstance(user_data, dict):
                 data["user"] = user_data.get('id')
             else:
-                data["user"] = user_data
+                logging.warning(f"Nieznany typ user: {type(user_data)}, wartość: {user_data}")
         
-        # Dodaj zadanie (KRYTYCZNE!)
+        # Dodaj zadanie
         if task_data:
             if isinstance(task_data, dict):
                 data["task"] = task_data.get('id')
             elif isinstance(task_data, str):
                 data["task"] = task_data
         
-        # Dodaj projekt jeśli jest
-        project_data = original_record.get('project')
-        if project_data:
-            if isinstance(project_data, dict):
-                data["project"] = project_data.get('id')
-            elif isinstance(project_data, str):
-                data["project"] = project_data
-        
         # Zachowaj komentarz
         if original_record.get('comment'):
             data["comment"] = original_record.get('comment')
         
-        # Zachowaj inne możliwe pola
+        # Zachowaj inne pola jeśli istnieją
         for field in ['billable', 'locked', 'invoiced']:
             if field in original_record:
                 data[field] = original_record[field]
         
         if DEBUG or SUPER_DEBUG:
-            logging.debug(f"Używam standardowego endpointu: PUT {url}")
+            logging.debug(f"Używam endpointu: PUT {url}")
             logging.debug(f"Kompletny payload: {json.dumps(data, indent=2)}")
         
         try:
@@ -231,8 +196,8 @@ class EverhourTimeMultiplier:
         # Standardowo w projects
         projects = task_data.get('projects', [])
         if projects and isinstance(projects, list) and len(projects) > 0:
-            if isinstance(projects[0], dict):
-                return projects[0].get('name', 'Bez nazwy projektu')
+            # Projects to lista ID, nie obiektów
+            return f"Projekt ID: {projects[0]}"
         
         return "Bez projektu"
     
@@ -253,6 +218,7 @@ class EverhourTimeMultiplier:
         total_updated_time = 0
         successful_updates = 0
         skipped_no_task = 0
+        skipped_zero_time = 0
         
         logging.info(f"Znaleziono {len(time_records)} rekordów:")
         
@@ -265,7 +231,14 @@ class EverhourTimeMultiplier:
                 if SUPER_DEBUG:
                     logging.debug(f"\n--- REKORD {i+1} ---")
                     logging.debug(f"ID: {record_id}")
-                    logging.debug(f"Struktura: {json.dumps(record, indent=2)}")
+                    logging.debug(f"Time: {original_time_seconds}")
+                    logging.debug(f"User: {record.get('user')}")
+                
+                # Pomijaj rekordy z zerem czasu
+                if original_time_seconds <= 0:
+                    logging.warning(f"  ⚠️  Pomijam rekord {record_id} - czas = {original_time_seconds}")
+                    skipped_zero_time += 1
+                    continue
                 
                 # Pobierz informacje o zadaniu
                 task_data = record.get('task')
@@ -316,6 +289,7 @@ class EverhourTimeMultiplier:
         logging.info(f"   Znalezionych rekordów: {len(time_records)}")
         logging.info(f"   Przetworzonych rekordów: {successful_updates}")
         logging.info(f"   Pominiętych (brak zadania): {skipped_no_task}")
+        logging.info(f"   Pominiętych (zero czasu): {skipped_zero_time}")
         
         if total_original_time > 0:
             original_hours = total_original_time / 3600
