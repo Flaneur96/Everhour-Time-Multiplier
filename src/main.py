@@ -10,6 +10,10 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 EVERHOUR_API_KEY = os.environ.get("EVERHOUR_API_KEY")
 BASE_URL = "https://api.everhour.com"
 
+# Dashboard integration
+DASHBOARD_API_URL = os.environ.get("DASHBOARD_API_URL")
+DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN")
+
 # Lista ID pracowników z mnożnikiem (z env lub domyślna)
 EMPLOYEES_WITH_MULTIPLIER = os.environ.get("EMPLOYEES_IDS", "").split(",")
 
@@ -181,11 +185,11 @@ class EverhourTimeMultiplier:
             return f"Projekt ID: {projects[0]}"
         return "Bez projektu"
 
-    def process_user_time(self, user_id, date):
+    def process_user_time(self, user_id, date, user_name=""):
         if DRY_RUN:
-            logging.info(f"🧪 [DRY RUN] Przetwarzanie czasu dla użytkownika {user_id} z dnia {date}")
+            logging.info(f"🧪 [DRY RUN] Przetwarzanie czasu dla użytkownika {user_name} ({user_id}) z dnia {date}")
         else:
-            logging.info(f"Przetwarzanie czasu dla użytkownika {user_id} z dnia {date}")
+            logging.info(f"Przetwarzanie czasu dla użytkownika {user_name} ({user_id}) z dnia {date}")
         if not DRY_RUN:
             backup_file = self.backup_user_records(user_id, date)
             if backup_file:
@@ -193,13 +197,15 @@ class EverhourTimeMultiplier:
         time_records = self.get_user_time_records(user_id, date)
         if not time_records:
             logging.warning(f"Brak rekordów czasu dla użytkownika {user_id}")
-            return
+            return None
+        
         total_original_time = 0
         total_updated_time = 0
         successful_updates = 0
         skipped_no_task = 0
         skipped_zero_time = 0
         skipped_already_processed = 0
+        
         logging.info(f"Znaleziono {len(time_records)} rekordów:")
         for i, record in enumerate(time_records):
             try:
@@ -257,6 +263,14 @@ class EverhourTimeMultiplier:
         logging.info(f"   Pominiętych (brak zadania): {skipped_no_task}")
         logging.info(f"   Pominiętych (zero czasu): {skipped_zero_time}")
         logging.info(f"   Pominiętych (już przetworzone): {skipped_already_processed}")
+        
+        summary = {
+            "total_records": len(time_records),
+            "processed": successful_updates,
+            "original_hours": 0,
+            "updated_hours": 0
+        }
+        
         if total_original_time > 0:
             original_hours = total_original_time / 3600
             updated_hours = total_updated_time / 3600
@@ -264,8 +278,13 @@ class EverhourTimeMultiplier:
             logging.info(f"   Czas oryginalny: {original_hours:.2f}h")
             logging.info(f"   Czas po aktualizacji: {updated_hours:.2f}h")
             logging.info(f"   Różnica: +{diff_hours:.2f}h")
+            
+            summary["original_hours"] = original_hours
+            summary["updated_hours"] = updated_hours
+        
+        return summary
 
-    def run_daily_update(self, process_date=None):
+    def run_daily_update(self, process_date=None, employees_list=None):
         if process_date is None:
             process_date = datetime.now().date() - timedelta(days=1)
         date_key = process_date.strftime("%Y-%m-%d")
@@ -277,17 +296,32 @@ class EverhourTimeMultiplier:
             logging.info("🧪 TRYB TESTOWY (DRY RUN) - ŻADNE DANE NIE ZOSTANĄ ZMIENIONE")
             logging.info("=" * 60)
         logging.info(f"=== Rozpoczynanie aktualizacji czasu za dzień {process_date} ===")
+        
+        # Użyj przekazanej listy lub pobierz z dashboard/env
+        if employees_list is None:
+            employees_list = get_employees_from_dashboard()
+            if not employees_list:
+                employees_list = [(emp_id.strip(), "") for emp_id in EMPLOYEES_WITH_MULTIPLIER if emp_id.strip()]
+        
         success_count = 0
         error_count = 0
-        for user_id in EMPLOYEES_WITH_MULTIPLIER:
-            if not user_id.strip():
-                continue
+        
+        for employee in employees_list:
+            if isinstance(employee, tuple):
+                user_id, user_name = employee
+            else:
+                user_id = employee
+                user_name = ""
+            
             try:
-                self.process_user_time(user_id.strip(), process_date)
+                summary = self.process_user_time(user_id, process_date, user_name)
+                if summary and not DRY_RUN:
+                    send_log_to_dashboard(user_id, user_name, process_date, summary)
                 success_count += 1
             except Exception as e:
                 logging.error(f"Błąd podczas przetwarzania użytkownika {user_id}: {e}")
                 error_count += 1
+        
         if not DRY_RUN:
             self.processed_dates.add(date_key)
         logging.info(f"=== Aktualizacja zakończona. Sukces: {success_count}, Błędy: {error_count} ===")
@@ -296,16 +330,131 @@ class EverhourTimeMultiplier:
             logging.info("🧪 KONIEC TRYBU TESTOWEGO - Aby naprawdę zaktualizować dane, ustaw DRY_RUN=false")
             logging.info("=" * 60)
 
+def get_employees_from_dashboard():
+    """Pobiera listę aktywnych pracowników z dashboard"""
+    if not DASHBOARD_API_URL or not DASHBOARD_TOKEN:
+        logging.info("Brak konfiguracji dashboard, używam listy z zmiennych środowiskowych")
+        return None
+    
+    try:
+        response = requests.get(
+            f"{DASHBOARD_API_URL}/api/employees",
+            headers={"Authorization": f"Bearer {DASHBOARD_TOKEN}"}
+        )
+        response.raise_for_status()
+        employees = response.json()
+        
+        # Zwróć tylko aktywnych jako tuple (id, name)
+        active_employees = [
+            (emp['id'], emp.get('name', 'Unknown'))
+            for emp in employees 
+            if emp.get('active', True)
+        ]
+        
+        logging.info(f"✅ Pobrano {len(active_employees)} aktywnych pracowników z dashboard")
+        for emp_id, emp_name in active_employees:
+            logging.info(f"   - {emp_name} (ID: {emp_id})")
+        
+        return active_employees
+    except Exception as e:
+        logging.error(f"❌ Błąd pobierania pracowników z dashboard: {e}")
+        return None
+
+def send_log_to_dashboard(employee_id, employee_name, date, summary):
+    """Wysyła log operacji do dashboard"""
+    if not DASHBOARD_API_URL or not DASHBOARD_TOKEN:
+        return
+    
+    try:
+        log_data = {
+            "employee_id": employee_id,
+            "employee_name": employee_name or "Unknown",
+            "date": str(date),
+            "original_hours": summary.get("original_hours", 0),
+            "updated_hours": summary.get("updated_hours", 0),
+            "status": "success" if summary.get("processed", 0) > 0 else "error"
+        }
+        
+        response = requests.post(
+            f"{DASHBOARD_API_URL}/api/logs/record",
+            json=log_data,
+            headers={"Authorization": f"Bearer {DASHBOARD_TOKEN}"}
+        )
+        response.raise_for_status()
+        logging.info("✅ Log operacji wysłany do dashboard")
+    except Exception as e:
+        logging.warning(f"⚠️  Nie udało się wysłać logu do dashboard: {e}")
+
+def get_config_from_dashboard():
+    """Pobiera konfigurację z dashboard"""
+    if not DASHBOARD_API_URL or not DASHBOARD_TOKEN:
+        return None
+    
+    try:
+        response = requests.get(
+            f"{DASHBOARD_API_URL}/api/config",
+            headers={"Authorization": f"Bearer {DASHBOARD_TOKEN}"}
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logging.error(f"❌ Błąd pobierania konfiguracji z dashboard: {e}")
+        return None
+
 def scheduled_job():
     logging.info("Uruchamiam zaplanowane zadanie...")
     if not EVERHOUR_API_KEY:
         logging.error("Brak klucza API Everhour!")
         return
-    if not EMPLOYEES_WITH_MULTIPLIER or EMPLOYEES_WITH_MULTIPLIER == ['']:
+    
+    # Sprawdź konfigurację z dashboard
+    config = get_config_from_dashboard()
+    if config:
+        global DRY_RUN, TIME_MULTIPLIER
+        DRY_RUN = config.get('dry_run', DRY_RUN)
+        TIME_MULTIPLIER = config.get('default_multiplier', TIME_MULTIPLIER)
+        logging.info(f"✅ Pobrano konfigurację z dashboard: DRY_RUN={DRY_RUN}, MULTIPLIER={TIME_MULTIPLIER}")
+    
+    # Pobierz pracowników
+    employees = get_employees_from_dashboard()
+    if not employees and (not EMPLOYEES_WITH_MULTIPLIER or EMPLOYEES_WITH_MULTIPLIER == ['']):
         logging.error("Brak listy pracowników!")
         return
+    
     multiplier = EverhourTimeMultiplier(EVERHOUR_API_KEY)
-    multiplier.run_daily_update()
+    multiplier.run_daily_update(employees_list=employees)
+
+def manual_trigger(employee_id=None, date=None):
+    """Funkcja do ręcznego uruchomienia dla konkretnego pracownika/daty"""
+    logging.info(f"Ręczne uruchomienie: employee_id={employee_id}, date={date}")
+    
+    if not EVERHOUR_API_KEY:
+        logging.error("Brak klucza API Everhour!")
+        return {"error": "No Everhour API key"}
+    
+    # Parsuj datę jeśli podana
+    process_date = None
+    if date:
+        try:
+            process_date = datetime.strptime(date, "%Y-%m-%d").date()
+        except:
+            logging.error(f"Nieprawidłowy format daty: {date}")
+            return {"error": "Invalid date format"}
+    
+    # Przygotuj listę pracowników
+    employees = None
+    if employee_id:
+        employees = [(employee_id, "Manual trigger")]
+    else:
+        employees = get_employees_from_dashboard()
+    
+    if not employees:
+        return {"error": "No employees to process"}
+    
+    multiplier = EverhourTimeMultiplier(EVERHOUR_API_KEY)
+    multiplier.run_daily_update(process_date, employees)
+    
+    return {"success": True, "processed": len(employees)}
 
 def main():
     logging.info("Everhour Time Multiplier - Start")
@@ -318,8 +467,21 @@ def main():
         logging.info("🔍 TRYB DEBUG WŁĄCZONY - dodatkowe logi")
     if SUPER_DEBUG:
         logging.info("🔬 TRYB SUPER DEBUG WŁĄCZONY - maksymalne logowanie")
+    if DASHBOARD_API_URL:
+        logging.info(f"📊 Dashboard API: {DASHBOARD_API_URL}")
+    
     if os.environ.get("RUN_ON_START", "false").lower() == "true":
         scheduled_job()
+    
+    # Sprawdź czy to ręczne uruchomienie
+    if os.environ.get("MANUAL_TRIGGER", "false").lower() == "true":
+        result = manual_trigger(
+            os.environ.get("MANUAL_EMPLOYEE_ID"),
+            os.environ.get("MANUAL_DATE")
+        )
+        logging.info(f"Wynik ręcznego uruchomienia: {result}")
+        return
+    
     scheduler = BlockingScheduler(timezone='Europe/Warsaw')
     scheduler.add_job(
         scheduled_job,
