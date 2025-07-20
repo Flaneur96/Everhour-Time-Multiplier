@@ -70,42 +70,41 @@ class EverhourTimeMultiplier:
         self.processed_records.add(record_key)
         self.save_processed_records()
 
-
     def backup_user_records(self, user_id, date):
-    records = self.get_user_time_records(user_id, date)
-    if records:
-        # Zapisz do pliku (tymczasowo)
-        backup_dir = "backups"
-        if not os.path.exists(backup_dir):
-            os.makedirs(backup_dir)
-        backup_file = os.path.join(backup_dir, f"backup_{user_id}_{date.strftime('%Y%m%d')}_{int(time.time())}.json")
-        with open(backup_file, 'w') as f:
-            json.dump(records, f, indent=2)
-        logging.info(f"📁 Utworzono backup lokalnie: {backup_file}")
-        
-        # NOWE: Zapisz też do dashboard/bazy
-        if DASHBOARD_API_URL and DASHBOARD_TOKEN:
-            try:
-                backup_data = {
-                    "user_id": user_id,
-                    "date": str(date),
-                    "data": json.dumps(records),
-                    "filename": os.path.basename(backup_file)
-                }
-                response = requests.post(
-                    f"{DASHBOARD_API_URL}/api/backups",
-                    json=backup_data,
-                    headers={"Authorization": f"Bearer {DASHBOARD_TOKEN}"}
-                )
-                if response.ok:
-                    logging.info("☁️  Backup zapisany w dashboard")
-                else:
-                    logging.warning(f"⚠️  Nie udało się zapisać backupu w dashboard: {response.status_code}")
-            except Exception as e:
-                logging.error(f"❌ Błąd zapisywania backupu do dashboard: {e}")
-        
-        return backup_file
-    return None
+        records = self.get_user_time_records(user_id, date)
+        if records:
+            # Zapisz do pliku (tymczasowo)
+            backup_dir = "backups"
+            if not os.path.exists(backup_dir):
+                os.makedirs(backup_dir)
+            backup_file = os.path.join(backup_dir, f"backup_{user_id}_{date.strftime('%Y%m%d')}_{int(time.time())}.json")
+            with open(backup_file, 'w') as f:
+                json.dump(records, f, indent=2)
+            logging.info(f"📁 Utworzono backup lokalnie: {backup_file}")
+            
+            # Zapisz do dashboard/bazy
+            if DASHBOARD_API_URL and DASHBOARD_TOKEN:
+                try:
+                    backup_data = {
+                        "user_id": user_id,
+                        "date": str(date),
+                        "data": json.dumps(records),
+                        "filename": os.path.basename(backup_file)
+                    }
+                    response = requests.post(
+                        f"{DASHBOARD_API_URL}/api/backups",
+                        json=backup_data,
+                        headers={"Authorization": f"Bearer {DASHBOARD_TOKEN}"}
+                    )
+                    if response.ok:
+                        logging.info("☁️  Backup zapisany w dashboard")
+                    else:
+                        logging.warning(f"⚠️  Nie udało się zapisać backupu w dashboard: {response.status_code}")
+                except Exception as e:
+                    logging.error(f"❌ Błąd zapisywania backupu do dashboard: {e}")
+            
+            return backup_file
+        return None
 
     def get_user_time_records(self, user_id, date):
         date_str = date.strftime("%Y-%m-%d")
@@ -445,8 +444,17 @@ def scheduled_job():
         logging.error("Brak listy pracowników!")
         return
     
+    # Sprawdź czy jest ustawiona konkretna data
+    process_date = None
+    if os.environ.get("PROCESS_DATE"):
+        try:
+            process_date = datetime.strptime(os.environ.get("PROCESS_DATE"), "%Y-%m-%d").date()
+            logging.info(f"📅 Używam daty z zmiennych środowiskowych: {process_date}")
+        except:
+            logging.error(f"Nieprawidłowy format daty: {os.environ.get('PROCESS_DATE')}")
+    
     multiplier = EverhourTimeMultiplier(EVERHOUR_API_KEY)
-    multiplier.run_daily_update(employees_list=employees)
+    multiplier.run_daily_update(process_date=process_date, employees_list=employees)
 
 def manual_trigger(employee_id=None, date=None):
     """Funkcja do ręcznego uruchomienia dla konkretnego pracownika/daty"""
@@ -479,8 +487,6 @@ def manual_trigger(employee_id=None, date=None):
     multiplier.run_daily_update(process_date, employees)
     
     return {"success": True, "processed": len(employees)}
-
-# W funkcji main() zmień część z harmonogramem:
 
 def main():
     logging.info("Everhour Time Multiplier - Start")
@@ -525,8 +531,8 @@ def main():
     scheduler.add_job(
         scheduled_job,
         'cron',
-        hour=run_hour,  # Użyj godziny z dashboard lub variables
-        minute=run_minute,  # Użyj minuty z dashboard lub variables
+        hour=run_hour,
+        minute=run_minute,
         id='daily_time_update'
     )
     logging.info("Scheduler uruchomiony. Czekam na zaplanowane zadania...")
