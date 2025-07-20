@@ -70,18 +70,42 @@ class EverhourTimeMultiplier:
         self.processed_records.add(record_key)
         self.save_processed_records()
 
+
     def backup_user_records(self, user_id, date):
-        records = self.get_user_time_records(user_id, date)
-        if records:
-            backup_dir = "backups"
-            if not os.path.exists(backup_dir):
-                os.makedirs(backup_dir)
-            backup_file = os.path.join(backup_dir, f"backup_{user_id}_{date.strftime('%Y%m%d')}_{int(time.time())}.json")
-            with open(backup_file, 'w') as f:
-                json.dump(records, f, indent=2)
-            logging.info(f"📁 Utworzono backup: {backup_file}")
-            return backup_file
-        return None
+    records = self.get_user_time_records(user_id, date)
+    if records:
+        # Zapisz do pliku (tymczasowo)
+        backup_dir = "backups"
+        if not os.path.exists(backup_dir):
+            os.makedirs(backup_dir)
+        backup_file = os.path.join(backup_dir, f"backup_{user_id}_{date.strftime('%Y%m%d')}_{int(time.time())}.json")
+        with open(backup_file, 'w') as f:
+            json.dump(records, f, indent=2)
+        logging.info(f"📁 Utworzono backup lokalnie: {backup_file}")
+        
+        # NOWE: Zapisz też do dashboard/bazy
+        if DASHBOARD_API_URL and DASHBOARD_TOKEN:
+            try:
+                backup_data = {
+                    "user_id": user_id,
+                    "date": str(date),
+                    "data": json.dumps(records),
+                    "filename": os.path.basename(backup_file)
+                }
+                response = requests.post(
+                    f"{DASHBOARD_API_URL}/api/backups",
+                    json=backup_data,
+                    headers={"Authorization": f"Bearer {DASHBOARD_TOKEN}"}
+                )
+                if response.ok:
+                    logging.info("☁️  Backup zapisany w dashboard")
+                else:
+                    logging.warning(f"⚠️  Nie udało się zapisać backupu w dashboard: {response.status_code}")
+            except Exception as e:
+                logging.error(f"❌ Błąd zapisywania backupu do dashboard: {e}")
+        
+        return backup_file
+    return None
 
     def get_user_time_records(self, user_id, date):
         date_str = date.strftime("%Y-%m-%d")
