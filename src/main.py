@@ -456,11 +456,26 @@ def manual_trigger(employee_id=None, date=None):
     
     return {"success": True, "processed": len(employees)}
 
+# W funkcji main() zmień część z harmonogramem:
+
 def main():
     logging.info("Everhour Time Multiplier - Start")
     logging.info(f"Mnożnik: {TIME_MULTIPLIER}x")
     logging.info(f"Pracownicy: {EMPLOYEES_WITH_MULTIPLIER}")
-    logging.info(f"Zaplanowane uruchomienie: {RUN_HOUR:02d}:{RUN_MINUTE:02d}")
+    
+    # Pobierz konfigurację z dashboard jeśli dostępne
+    config = get_config_from_dashboard()
+    if config:
+        run_hour = config.get('run_hour', RUN_HOUR)
+        run_minute = config.get('run_minute', RUN_MINUTE)
+        logging.info(f"✅ Pobrano harmonogram z dashboard: {run_hour:02d}:{run_minute:02d}")
+    else:
+        run_hour = RUN_HOUR
+        run_minute = RUN_MINUTE
+        logging.info(f"Używam harmonogramu z variables: {run_hour:02d}:{run_minute:02d}")
+    
+    logging.info(f"Zaplanowane uruchomienie: {run_hour:02d}:{run_minute:02d}")
+    
     if DRY_RUN:
         logging.info("🧪 TRYB DRY RUN WŁĄCZONY - dane nie będą modyfikowane")
     if DEBUG:
@@ -486,8 +501,8 @@ def main():
     scheduler.add_job(
         scheduled_job,
         'cron',
-        hour=RUN_HOUR,
-        minute=RUN_MINUTE,
+        hour=run_hour,  # Użyj godziny z dashboard lub variables
+        minute=run_minute,  # Użyj minuty z dashboard lub variables
         id='daily_time_update'
     )
     logging.info("Scheduler uruchomiony. Czekam na zaplanowane zadania...")
