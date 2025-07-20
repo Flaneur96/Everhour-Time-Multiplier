@@ -17,7 +17,7 @@ DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN")
 # Lista ID pracowników z mnożnikiem (z env lub domyślna)
 EMPLOYEES_WITH_MULTIPLIER = os.environ.get("EMPLOYEES_IDS", "").split(",")
 
-# Mnożnik czasu
+# Mnożnik czasu (domyślny)
 TIME_MULTIPLIER = float(os.environ.get("TIME_MULTIPLIER", "1.5"))
 
 # Godzina uruchomienia (format 24h)
@@ -125,7 +125,7 @@ class EverhourTimeMultiplier:
             logging.error(f"Błąd podczas pobierania rekordów dla użytkownika {user_id}: {e}")
             return None
 
-    def update_time_record(self, record_id, new_time_seconds, original_record):
+    def update_time_record(self, record_id, new_time_seconds, original_record, multiplier):
         task_data = original_record.get('task')
         if not task_data:
             logging.error(f"Brak task dla rekordu {record_id}")
@@ -136,7 +136,7 @@ class EverhourTimeMultiplier:
         hours = new_time_seconds / 3600
 
         if DRY_RUN:
-            logging.info(f"     🧪 [DRY RUN] Usunąłbym rekord {record_id} i dodał nowy z czasem {hours:.2f}h")
+            logging.info(f"     🧪 [DRY RUN] Usunąłbym rekord {record_id} i dodał nowy z czasem {hours:.2f}h (mnożnik {multiplier}x)")
             if SUPER_DEBUG:
                 logging.debug(f"     Task ID: {task_id}")
                 logging.debug(f"     User ID: {user_id}")
@@ -208,15 +208,20 @@ class EverhourTimeMultiplier:
             return f"Projekt ID: {projects[0]}"
         return "Bez projektu"
 
-    def process_user_time(self, user_id, date, user_name=""):
+    def process_user_time(self, user_id, date, user_name="", multiplier=None):
+        # Użyj indywidualnego mnożnika lub domyślnego
+        effective_multiplier = multiplier if multiplier is not None else TIME_MULTIPLIER
+        
         if DRY_RUN:
-            logging.info(f"🧪 [DRY RUN] Przetwarzanie czasu dla użytkownika {user_name} ({user_id}) z dnia {date}")
+            logging.info(f"🧪 [DRY RUN] Przetwarzanie czasu dla użytkownika {user_name} ({user_id}) z dnia {date} [Mnożnik: {effective_multiplier}x]")
         else:
-            logging.info(f"Przetwarzanie czasu dla użytkownika {user_name} ({user_id}) z dnia {date}")
+            logging.info(f"Przetwarzanie czasu dla użytkownika {user_name} ({user_id}) z dnia {date} [Mnożnik: {effective_multiplier}x]")
+        
         if not DRY_RUN:
             backup_file = self.backup_user_records(user_id, date)
             if backup_file:
                 logging.info(f"✅ Backup utworzony: {backup_file}")
+        
         time_records = self.get_user_time_records(user_id, date)
         if not time_records:
             logging.warning(f"Brak rekordów czasu dla użytkownika {user_id}")
@@ -258,12 +263,16 @@ class EverhourTimeMultiplier:
                     logging.info(f"  ⏭️  [{project_name}] {task_name} - już przetworzony, pomijam")
                     skipped_already_processed += 1
                     continue
-                new_time_seconds = int(original_time_seconds * TIME_MULTIPLIER)
+                
+                # Używamy indywidualnego mnożnika
+                new_time_seconds = int(original_time_seconds * effective_multiplier)
                 original_hours = original_time_seconds / 3600
                 new_hours = new_time_seconds / 3600
+                
                 logging.info(f"  📋 [{project_name}] {task_name}:")
-                logging.info(f"     ⏱️  {original_hours:.2f}h → {new_hours:.2f}h (+{new_hours - original_hours:.2f}h)")
-                result = self.update_time_record(record_id, new_time_seconds, record)
+                logging.info(f"     ⏱️  {original_hours:.2f}h → {new_hours:.2f}h (+{new_hours - original_hours:.2f}h) [×{effective_multiplier}]")
+                
+                result = self.update_time_record(record_id, new_time_seconds, record, effective_multiplier)
                 if result:
                     total_original_time += original_time_seconds
                     total_updated_time += new_time_seconds
@@ -324,20 +333,24 @@ class EverhourTimeMultiplier:
         if employees_list is None:
             employees_list = get_employees_from_dashboard()
             if not employees_list:
-                employees_list = [(emp_id.strip(), "") for emp_id in EMPLOYEES_WITH_MULTIPLIER if emp_id.strip()]
+                employees_list = [(emp_id.strip(), "", TIME_MULTIPLIER) for emp_id in EMPLOYEES_WITH_MULTIPLIER if emp_id.strip()]
         
         success_count = 0
         error_count = 0
         
         for employee in employees_list:
-            if isinstance(employee, tuple):
+            if isinstance(employee, tuple) and len(employee) >= 3:
+                user_id, user_name, user_multiplier = employee[:3]
+            elif isinstance(employee, tuple) and len(employee) == 2:
                 user_id, user_name = employee
+                user_multiplier = TIME_MULTIPLIER
             else:
                 user_id = employee
                 user_name = ""
+                user_multiplier = TIME_MULTIPLIER
             
             try:
-                summary = self.process_user_time(user_id, process_date, user_name)
+                summary = self.process_user_time(user_id, process_date, user_name, user_multiplier)
                 if summary and not DRY_RUN:
                     send_log_to_dashboard(user_id, user_name, process_date, summary)
                 success_count += 1
@@ -367,16 +380,16 @@ def get_employees_from_dashboard():
         response.raise_for_status()
         employees = response.json()
         
-        # Zwróć tylko aktywnych jako tuple (id, name)
+        # Zwróć tylko aktywnych jako tuple (id, name, multiplier)
         active_employees = [
-            (emp['id'], emp.get('name', 'Unknown'))
+            (emp['id'], emp.get('name', 'Unknown'), emp.get('multiplier', TIME_MULTIPLIER))
             for emp in employees 
             if emp.get('active', True)
         ]
         
         logging.info(f"✅ Pobrano {len(active_employees)} aktywnych pracowników z dashboard")
-        for emp_id, emp_name in active_employees:
-            logging.info(f"   - {emp_name} (ID: {emp_id})")
+        for emp_id, emp_name, emp_multiplier in active_employees:
+            logging.info(f"   - {emp_name} (ID: {emp_id}, Mnożnik: {emp_multiplier}x)")
         
         return active_employees
     except Exception as e:
@@ -476,7 +489,7 @@ def manual_trigger(employee_id=None, date=None):
     # Przygotuj listę pracowników
     employees = None
     if employee_id:
-        employees = [(employee_id, "Manual trigger")]
+        employees = [(employee_id, "Manual trigger", TIME_MULTIPLIER)]
     else:
         employees = get_employees_from_dashboard()
     
